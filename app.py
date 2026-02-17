@@ -755,36 +755,38 @@ with tab1:
         st.markdown("""
         If the gnomAD API is blocked, you can manually enter values from the gnomAD website.
         Go to [gnomAD](https://gnomad.broadinstitute.org/), search for your variant, and copy the values below.
+        
+        **From gnomAD ID format:** `13-`**`32319142`**`-G-T` → enter the **bolded number** as Genomic Position
         """)
         
         manual_col1, manual_col2 = st.columns(2)
         
         with manual_col1:
             manual_position = st.number_input(
-                "Genomic Position (GRCh38)",
+                "Genomic Position (e.g., 32319142)",
                 min_value=0,
                 value=0,
-                help="The 'Position' shown on gnomAD (e.g., 32319142)"
+                help="From gnomAD ID '13-32319142-G-T', enter just the position number: 32319142"
             )
             manual_global_af = st.text_input(
                 "Global Allele Frequency",
                 value="",
-                placeholder="e.g., 0.00001 or 1.5e-5",
-                help="Total allele frequency from gnomAD"
+                placeholder="e.g., 0.00001 or 6.2e-7",
+                help="Total allele frequency from gnomAD (look for 'Allele Frequency' on variant page)"
             )
         
         with manual_col2:
             manual_sas_af = st.text_input(
                 "South Asian Allele Frequency",
                 value="",
-                placeholder="e.g., 0.00005 or 5e-5",
-                help="South Asian (SAS) population frequency"
+                placeholder="e.g., 0.00005 or 0 if not present",
+                help="South Asian (SAS) population frequency from gnomAD Population Frequencies table"
             )
             manual_consequence = st.selectbox(
                 "Consequence Type",
                 options=["Not specified", "Missense", "Synonymous", "Stop gained (nonsense)", 
                         "Frameshift", "Splice", "Start lost", "Stop lost", "Inframe indel"],
-                help="The variant consequence shown on gnomAD"
+                help="The VEP Consequence shown on gnomAD variant page"
             )
         
         use_manual_gnomad = st.checkbox("✅ Use these manual values instead of API", value=False)
@@ -838,13 +840,58 @@ with tab1:
                         
                         # Get consequence from ClinVar
                         clinvar_consequence = parsed.get('consequence_from_clinvar', '')
+                        variant_name = parsed.get('variant_name', '')
+                        protein_change = parsed.get('protein_change', '')
+                        
+                        # Try to detect consequence from multiple sources
+                        is_truncating = False
+                        protein_position = None
+                        
+                        # Check variant name for stop codon indicators (e.g., p.Gln619Ter, p.Gln619*)
+                        if 'Ter' in variant_name or '*' in variant_name or 'fs' in variant_name.lower():
+                            is_truncating = True
+                        if 'Ter' in protein_change or '*' in protein_change or 'fs' in protein_change.lower():
+                            is_truncating = True
+                        
+                        # Check explicit consequence
                         if clinvar_consequence:
-                            if clinvar_consequence.lower() in ['nonsense', 'frameshift', 'stop_gained']:
-                                all_features['consequence_severity'] = 2
-                            elif clinvar_consequence.lower() in ['missense']:
+                            cons_lower = clinvar_consequence.lower()
+                            if any(x in cons_lower for x in ['nonsense', 'frameshift', 'stop_gained', 'stop gained', 'truncat']):
+                                is_truncating = True
+                        
+                        # Extract protein position from variant name (e.g., "p.Gln619Ter" -> 619)
+                        import re
+                        pos_match = re.search(r'p\.[A-Za-z]+(\d+)', variant_name)
+                        if pos_match:
+                            protein_position = int(pos_match.group(1))
+                        if not protein_position:
+                            pos_match = re.search(r'p\.[A-Za-z]+(\d+)', protein_change)
+                            if pos_match:
+                                protein_position = int(pos_match.group(1))
+                        
+                        # Set consequence severity
+                        if is_truncating:
+                            all_features['consequence_severity'] = 2
+                            st.info(f"🔬 Detected truncating variant (nonsense/frameshift)")
+                        elif clinvar_consequence:
+                            if clinvar_consequence.lower() in ['missense', 'missense_variant']:
                                 all_features['consequence_severity'] = 1
                             else:
                                 all_features['consequence_severity'] = 0
+                        
+                        # Set position features from protein position
+                        if protein_position:
+                            all_features['pos_scaled'] = min(1.0, protein_position / 3418)
+                            
+                            # Calculate genomic position estimate (for BRCA2)
+                            # BRCA2 coding start ~32316461 on GRCh38
+                            if all_features['Start'] == 0:
+                                all_features['Start'] = 32316461 + (protein_position * 3)
+                            
+                            # Determine domain
+                            domain_features, domain_name = determine_domain(protein_position)
+                            all_features.update(domain_features)
+                            st.info(f"📍 Protein position {protein_position} → {domain_name} domain, pos_scaled={all_features['pos_scaled']:.3f}")
                         
                         fetch_results['ClinVar'] = {
                             'Variant': parsed.get('variant_name', 'N/A'),
