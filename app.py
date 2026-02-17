@@ -120,7 +120,7 @@ MODEL, MODEL_LOADED = load_model()
 def fetch_gnomad_data(variant_id):
     """
     Fetch variant data from gnomAD GraphQL API
-    Tries multiple dataset versions
+    Falls back to MyVariant.info if gnomAD API fails
     """
     try:
         variant_id = variant_id.strip().replace(' ', '').replace(':', '-')
@@ -132,7 +132,86 @@ def fetch_gnomad_data(variant_id):
         chrom, pos, ref, alt = parts
         chrom = chrom.replace('chr', '')
         
-        # Updated query for gnomAD v4
+        gnomad_variant_id = f"{chrom}-{pos}-{ref}-{alt}"
+        
+        # First try MyVariant.info (more reliable from cloud servers)
+        try:
+            # Convert to HGVS format for MyVariant.info
+            hgvs_id = f"chr{chrom}:g.{pos}{ref}>{alt}"
+            myvariant_url = f"https://myvariant.info/v1/variant/{hgvs_id}"
+            
+            mv_response = requests.get(myvariant_url, timeout=15)
+            if mv_response.status_code == 200:
+                mv_data = mv_response.json()
+                
+                # Extract gnomAD data from MyVariant.info response
+                gnomad_exome = mv_data.get('gnomad_exome', {})
+                gnomad_genome = mv_data.get('gnomad_genome', {})
+                
+                if gnomad_exome or gnomad_genome:
+                    # Build a response compatible with our parser
+                    variant_data = {
+                        'variant_id': gnomad_variant_id,
+                        'chrom': chrom,
+                        'pos': int(pos),
+                        'ref': ref,
+                        'alt': alt,
+                        'source': 'myvariant.info',
+                        'exome': None,
+                        'genome': None,
+                        'transcript_consequences': []
+                    }
+                    
+                    # Parse exome data
+                    if gnomad_exome:
+                        exome_pops = []
+                        for pop_id in ['afr', 'amr', 'asj', 'eas', 'fin', 'nfe', 'sas', 'oth']:
+                            ac_key = f'ac_{pop_id}'
+                            an_key = f'an_{pop_id}'
+                            if ac_key in gnomad_exome and an_key in gnomad_exome:
+                                # Map population IDs to gnomAD format
+                                pop_map = {'afr': 'afr', 'amr': 'amr', 'asj': 'asj', 'eas': 'eas', 
+                                          'fin': 'fin', 'nfe': 'nfe', 'sas': 'sas', 'oth': 'remaining'}
+                                exome_pops.append({
+                                    'id': pop_map.get(pop_id, pop_id),
+                                    'ac': gnomad_exome.get(ac_key, 0),
+                                    'an': gnomad_exome.get(an_key, 0)
+                                })
+                        
+                        variant_data['exome'] = {
+                            'ac': gnomad_exome.get('ac', {}).get('ac', gnomad_exome.get('ac', 0)),
+                            'an': gnomad_exome.get('an', {}).get('an', gnomad_exome.get('an', 0)),
+                            'ac_hom': gnomad_exome.get('hom', {}).get('hom', gnomad_exome.get('ac_hom', 0)),
+                            'populations': exome_pops
+                        }
+                    
+                    # Parse genome data  
+                    if gnomad_genome:
+                        genome_pops = []
+                        for pop_id in ['afr', 'amr', 'asj', 'eas', 'fin', 'nfe', 'sas', 'oth']:
+                            ac_key = f'ac_{pop_id}'
+                            an_key = f'an_{pop_id}'
+                            if ac_key in gnomad_genome and an_key in gnomad_genome:
+                                pop_map = {'afr': 'afr', 'amr': 'amr', 'asj': 'asj', 'eas': 'eas',
+                                          'fin': 'fin', 'nfe': 'nfe', 'sas': 'sas', 'oth': 'remaining'}
+                                genome_pops.append({
+                                    'id': pop_map.get(pop_id, pop_id),
+                                    'ac': gnomad_genome.get(ac_key, 0),
+                                    'an': gnomad_genome.get(an_key, 0)
+                                })
+                        
+                        variant_data['genome'] = {
+                            'ac': gnomad_genome.get('ac', {}).get('ac', gnomad_genome.get('ac', 0)),
+                            'an': gnomad_genome.get('an', {}).get('an', gnomad_genome.get('an', 0)),
+                            'ac_hom': gnomad_genome.get('hom', {}).get('hom', gnomad_genome.get('ac_hom', 0)),
+                            'populations': genome_pops
+                        }
+                    
+                    return variant_data, None
+        except Exception as e:
+            pass  # Fall through to try gnomAD directly
+        
+        # Try gnomAD GraphQL API directly
         query = """
         query getVariant($variantId: String!, $datasetId: DatasetId!) {
             variant(variantId: $variantId, dataset: $datasetId) {
@@ -175,13 +254,10 @@ def fetch_gnomad_data(variant_id):
         }
         """
         
-        gnomad_variant_id = f"{chrom}-{pos}-{ref}-{alt}"
-        
-        # List of datasets to try (updated for 2025)
         datasets_to_try = [
-            "gnomad_r4",      # gnomAD v4.x (GRCh38)
-            "gnomad_r3",      # gnomAD v3 (GRCh38)  
-            "gnomad_r2_1",    # gnomAD v2.1.1 (GRCh37)
+            "gnomad_r4",
+            "gnomad_r3",
+            "gnomad_r2_1",
         ]
         
         errors_by_dataset = {}
@@ -200,9 +276,12 @@ def fetch_gnomad_data(variant_id):
                     timeout=30
                 )
                 
+                if response.status_code != 200:
+                    errors_by_dataset[dataset_id] = f"HTTP {response.status_code}"
+                    continue
+                
                 data = response.json()
                 
-                # Check for errors in response
                 if "errors" in data:
                     errors_by_dataset[dataset_id] = data["errors"][0].get("message", "Unknown error")
                     continue
@@ -218,9 +297,8 @@ def fetch_gnomad_data(variant_id):
             except Exception as e:
                 errors_by_dataset[dataset_id] = str(e)
         
-        # If all datasets fail, return detailed error
         error_details = "; ".join([f"{k}: {v}" for k, v in errors_by_dataset.items()])
-        return None, f"Variant not found in gnomAD. Details: {error_details}"
+        return None, f"Variant not found. Tried MyVariant.info and gnomAD ({error_details})"
         
     except requests.exceptions.Timeout:
         return None, "Request timed out. Please try again."
