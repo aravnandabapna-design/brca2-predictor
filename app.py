@@ -496,12 +496,13 @@ def predict_pathogenicity(features):
     Falls back to rule-based scoring if model unavailable
     """
     if MODEL is not None:
-        # Feature order must match training data from notebook 07
+        # Feature order must EXACTLY match training data from notebook 07 (14 features)
         feature_order = [
-            'gnomad_AF', 'gnomad_AF_sas', 'sa_enrichment_ratio',
+            'Chromosome', 'Start', 'gnomad_AF', 'gnomad_AF_sas',
             'ReviewStatus_numeric', 'NumberSubmitters', 'is_SA_specific',
-            'is_SA_enriched', 'pos_scaled', 'consequence_severity',
-            'domain_BRC1', 'domain_BRC2', 'domain_BRC3_BRC4', 'domain_other'
+            'pos_scaled', 'consequence_severity', 'domain_BRC1',
+            'domain_BRC2', 'domain_BRC3_BRC4', 'domain_other',
+            'sa_enrichment_ratio'
         ]
         
         # Build feature array
@@ -662,6 +663,8 @@ with tab1:
             st.error("Please enter at least one ID")
         else:
             all_features = {
+                'Chromosome': 13,  # Always 13 for BRCA2
+                'Start': 0,  # Will be filled from gnomAD ID
                 'gnomad_AF': 0,
                 'gnomad_AF_sas': 0,
                 'sa_enrichment_ratio': 0,
@@ -680,6 +683,7 @@ with tab1:
             fetch_results = {}
             protein_position = None
             clinvar_gnomad_af = None
+            genomic_position = None  # Track genomic position
             
             # Fetch ClinVar first (may have gnomAD data)
             if clinvar_id:
@@ -721,6 +725,15 @@ with tab1:
             
             # Fetch gnomAD
             if gnomad_id:
+                # Extract position from gnomAD ID (format: 13-32398489-C-G)
+                try:
+                    parts = gnomad_id.strip().replace(' ', '').replace(':', '-').split('-')
+                    if len(parts) >= 2:
+                        all_features['Chromosome'] = int(parts[0].replace('chr', ''))
+                        all_features['Start'] = int(parts[1])
+                except:
+                    pass
+                
                 with st.spinner("Fetching from gnomAD..."):
                     gnomad_data, gnomad_error = fetch_gnomad_data(gnomad_id)
                     
@@ -741,6 +754,10 @@ with tab1:
                         all_features['consequence_severity'] = parsed['consequence_severity']
                         all_features['pos_scaled'] = parsed['pos_scaled']
                         protein_position = parsed['protein_position']
+                        
+                        # Update Start position from gnomAD response if available
+                        if gnomad_data.get('pos'):
+                            all_features['Start'] = int(gnomad_data['pos'])
                         
                         sa_flags = calculate_sa_flags(
                             parsed['gnomad_AF'],
@@ -778,18 +795,20 @@ with tab1:
                     
                     st.markdown("---")
                 
-                # All 13 features
-                st.markdown("## 🔢 All 13 Features")
+                # All 14 features
+                st.markdown("## 🔢 All 14 Features")
                 
                 f1, f2, f3 = st.columns(3)
                 
                 with f1:
+                    st.markdown("### Genomic")
+                    st.markdown(f"**Chromosome:** {all_features['Chromosome']}")
+                    st.markdown(f"**Position:** {all_features['Start']:,}")
                     st.markdown("### Population")
                     st.markdown(f"**Global AF:** {all_features['gnomad_AF']:.2e}")
                     st.markdown(f"**SA AF:** {all_features['gnomad_AF_sas']:.2e}")
                     st.markdown(f"**SA Enrichment:** {all_features['sa_enrichment_ratio']:.1f}x")
                     st.markdown(f"**SA-Specific:** {'Yes' if all_features['is_SA_specific'] else 'No'}")
-                    st.markdown(f"**SA-Enriched:** {'Yes' if all_features['is_SA_enriched'] else 'No'}")
                 
                 with f2:
                     st.markdown("### Clinical")
