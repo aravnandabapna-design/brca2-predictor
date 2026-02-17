@@ -298,7 +298,12 @@ def fetch_gnomad_data(variant_id):
                 errors_by_dataset[dataset_id] = str(e)
         
         error_details = "; ".join([f"{k}: {v}" for k, v in errors_by_dataset.items()])
-        return None, f"Variant not found. Tried MyVariant.info and gnomAD ({error_details})"
+        
+        # Check if it's a blocking issue
+        if all("403" in str(v) for v in errors_by_dataset.values()):
+            return None, "gnomAD API blocks cloud servers. Use ClinVar only (it often includes gnomAD frequencies), or run locally."
+        
+        return None, f"Variant not found. Details: {error_details}"
         
     except requests.exceptions.Timeout:
         return None, "Request timed out. Please try again."
@@ -730,20 +735,59 @@ with tab1:
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("### gnomAD Variant ID")
+        st.markdown("### gnomAD Variant ID *(optional)*")
         gnomad_id = st.text_input(
             "Format: chrom-pos-ref-alt",
             placeholder="13-32325155-T-A",
-            help="Find this on gnomAD website - e.g., 13-32325155-T-A"
+            help="⚠️ Note: gnomAD API may be blocked on cloud servers. ClinVar often includes gnomAD data."
         )
         
     with col2:
-        st.markdown("### ClinVar Variation ID")
+        st.markdown("### ClinVar Variation ID *(recommended)*")
         clinvar_id = st.text_input(
             "Format: numeric ID",
             placeholder="37869",
-            help="Find this on ClinVar website - the number in the URL"
+            help="Find this on ClinVar website - the number in the URL. ClinVar often includes gnomAD frequencies."
         )
+    
+    # Manual gnomAD input section (for when API is blocked)
+    with st.expander("📝 **Manual gnomAD Input** (use if API is blocked)", expanded=False):
+        st.markdown("""
+        If the gnomAD API is blocked, you can manually enter values from the gnomAD website.
+        Go to [gnomAD](https://gnomad.broadinstitute.org/), search for your variant, and copy the values below.
+        """)
+        
+        manual_col1, manual_col2 = st.columns(2)
+        
+        with manual_col1:
+            manual_position = st.number_input(
+                "Genomic Position (GRCh38)",
+                min_value=0,
+                value=0,
+                help="The 'Position' shown on gnomAD (e.g., 32319142)"
+            )
+            manual_global_af = st.text_input(
+                "Global Allele Frequency",
+                value="",
+                placeholder="e.g., 0.00001 or 1.5e-5",
+                help="Total allele frequency from gnomAD"
+            )
+        
+        with manual_col2:
+            manual_sas_af = st.text_input(
+                "South Asian Allele Frequency",
+                value="",
+                placeholder="e.g., 0.00005 or 5e-5",
+                help="South Asian (SAS) population frequency"
+            )
+            manual_consequence = st.selectbox(
+                "Consequence Type",
+                options=["Not specified", "Missense", "Synonymous", "Stop gained (nonsense)", 
+                        "Frameshift", "Splice", "Start lost", "Stop lost", "Inframe indel"],
+                help="The variant consequence shown on gnomAD"
+            )
+        
+        use_manual_gnomad = st.checkbox("✅ Use these manual values instead of API", value=False)
     
     st.markdown("---")
     
@@ -813,8 +857,76 @@ with tab1:
                         }
                         st.success("✅ ClinVar data fetched!")
             
-            # Fetch gnomAD
-            if gnomad_id:
+            # Handle gnomAD data (manual or API)
+            gnomad_success = False
+            
+            # Check if user wants to use manual gnomAD values
+            if use_manual_gnomad:
+                st.info("📝 Using manual gnomAD values...")
+                
+                # Parse manual allele frequencies
+                try:
+                    if manual_global_af.strip():
+                        all_features['gnomad_AF'] = float(manual_global_af.strip())
+                except:
+                    st.warning("Could not parse Global AF, using 0")
+                
+                try:
+                    if manual_sas_af.strip():
+                        all_features['gnomad_AF_sas'] = float(manual_sas_af.strip())
+                except:
+                    st.warning("Could not parse South Asian AF, using 0")
+                
+                # Set position
+                if manual_position > 0:
+                    all_features['Start'] = manual_position
+                    # Calculate pos_scaled (BRCA2 spans ~32,315,086 to 32,399,672 on chr13)
+                    brca2_start = 32315086
+                    brca2_end = 32399672
+                    all_features['pos_scaled'] = (manual_position - brca2_start) / (brca2_end - brca2_start)
+                    all_features['pos_scaled'] = max(0, min(1, all_features['pos_scaled']))
+                
+                # Set consequence
+                consequence_map = {
+                    "Not specified": 1,
+                    "Missense": 1,
+                    "Synonymous": 0,
+                    "Stop gained (nonsense)": 2,
+                    "Frameshift": 2,
+                    "Splice": 2,
+                    "Start lost": 2,
+                    "Stop lost": 1,
+                    "Inframe indel": 1
+                }
+                all_features['consequence_severity'] = consequence_map.get(manual_consequence, 1)
+                
+                # Calculate SA flags from manual values
+                sa_flags = calculate_sa_flags(
+                    all_features['gnomad_AF'],
+                    all_features['gnomad_AF_sas'],
+                    {}
+                )
+                all_features.update(sa_flags)
+                
+                # Estimate protein position from genomic position for domain calculation
+                if manual_position > 0:
+                    # Rough estimate: BRCA2 coding region
+                    estimated_protein_pos = int((manual_position - 32315086) / 3)
+                    domain_features, domain_name = determine_domain(estimated_protein_pos)
+                    all_features.update(domain_features)
+                
+                fetch_results['gnomAD (Manual)'] = {
+                    'Global AF': f"{all_features['gnomad_AF']:.2e}" if all_features['gnomad_AF'] > 0 else "0",
+                    'South Asian AF': f"{all_features['gnomad_AF_sas']:.2e}" if all_features['gnomad_AF_sas'] > 0 else "0",
+                    'SA Enrichment': f"{sa_flags['sa_enrichment_ratio']:.1f}x",
+                    'Consequence': manual_consequence,
+                    'Position': str(manual_position) if manual_position > 0 else "Not specified"
+                }
+                st.success("✅ Manual gnomAD values applied!")
+                gnomad_success = True
+            
+            # Try gnomAD API if not using manual values
+            elif gnomad_id:
                 # Extract position from gnomAD ID (format: 13-32398489-C-G)
                 try:
                     parts = gnomad_id.strip().replace(' ', '').replace(':', '-').split('-')
@@ -828,11 +940,14 @@ with tab1:
                     gnomad_data, gnomad_error = fetch_gnomad_data(gnomad_id)
                     
                     if gnomad_error:
-                        st.warning(f"gnomAD: {gnomad_error}")
+                        st.warning(f"⚠️ {gnomad_error}")
+                        st.info("💡 **Tip:** Expand 'Manual gnomAD Input' above, enter values from gnomAD website, check the box, and click Fetch again.")
+                        
                         # Try to use ClinVar's gnomAD data as fallback
                         if clinvar_gnomad_af is not None:
                             all_features['gnomad_AF'] = clinvar_gnomad_af
-                            st.info(f"Using gnomAD AF from ClinVar: {clinvar_gnomad_af}")
+                            st.success(f"✅ Using gnomAD AF from ClinVar: {clinvar_gnomad_af:.2e}")
+                            gnomad_success = True
                     elif gnomad_data:
                         if debug_mode:
                             st.markdown("#### Raw gnomAD Response:")
@@ -870,6 +985,7 @@ with tab1:
                             'Domain': domain_name
                         }
                         st.success("✅ gnomAD data fetched!")
+                        gnomad_success = True
             
             # Display results
             if fetch_results:
