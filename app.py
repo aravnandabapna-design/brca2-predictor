@@ -961,7 +961,10 @@ with tab1:
                     "Stop lost": 1,
                     "Inframe indel": 1
                 }
-                all_features['consequence_severity'] = consequence_map.get(manual_consequence, 1)
+                # Only override consequence_severity if ClinVar didn't already detect truncating
+                # (ClinVar detection is more reliable from variant name patterns)
+                if all_features['consequence_severity'] != 2:  # Not already truncating
+                    all_features['consequence_severity'] = consequence_map.get(manual_consequence, 1)
                 
                 # Calculate SA flags from manual values
                 sa_flags = calculate_sa_flags(
