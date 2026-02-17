@@ -800,8 +800,8 @@ with tab1:
             )
             manual_consequence = st.selectbox(
                 "Consequence Type",
-                options=["Not specified", "Missense", "Synonymous", "Stop gained (nonsense)", 
-                        "Frameshift", "Splice", "Start lost", "Stop lost", "Inframe indel"],
+                options=["Not specified", "Missense", "Synonymous", "Intronic", "Stop gained (nonsense)", 
+                        "Frameshift", "Splice donor/acceptor", "Start lost", "Stop lost", "Inframe indel"],
                 help="The VEP Consequence shown on gnomAD variant page"
             )
         
@@ -954,9 +954,10 @@ with tab1:
                     "Not specified": 1,
                     "Missense": 1,
                     "Synonymous": 0,
+                    "Intronic": 0,  # Low impact, same as synonymous
                     "Stop gained (nonsense)": 2,
                     "Frameshift": 2,
-                    "Splice": 2,
+                    "Splice donor/acceptor": 2,  # High impact - affects splicing
                     "Start lost": 2,
                     "Stop lost": 1,
                     "Inframe indel": 1
@@ -1086,7 +1087,7 @@ with tab1:
                     st.markdown("### Clinical")
                     st.markdown(f"**Review Status:** {all_features['ReviewStatus_numeric']} star(s)")
                     st.markdown(f"**Submitters:** {all_features['NumberSubmitters']}")
-                    consequence_names = {0: "Synonymous", 1: "Missense", 2: "Truncating"}
+                    consequence_names = {0: "Synonymous/Intronic", 1: "Missense", 2: "Truncating"}
                     st.markdown(f"**Consequence:** {consequence_names.get(all_features['consequence_severity'], 'Unknown')}")
                 
                 with f3:
@@ -1205,7 +1206,7 @@ with tab2:
         review_m = st.selectbox("Review Status (stars)", [0, 1, 2, 3, 4], index=1)
         subs_m = st.slider("Number of Submitters", 1, 20, 1)
         cons_m = st.selectbox("Consequence Type", [0, 1, 2], index=1, 
-                              format_func=lambda x: ["Synonymous", "Missense", "Truncating"][x])
+                              format_func=lambda x: ["Synonymous/Intronic", "Missense", "Truncating"][x])
     
     st.markdown("### Structural Features")
     pos_m = st.slider("Position in Gene (0-1)", 0.0, 1.0, 0.5)
