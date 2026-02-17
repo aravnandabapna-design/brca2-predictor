@@ -1270,7 +1270,7 @@ with tab3:
     c1.metric("SA Underrepresentation", "47.5%")
     c2.metric("SA-Specific VUS", "84")
     c3.metric("Literature Overlap", "0%")
-    c4.metric("Model ROC AUC", "~0.80")
+    c4.metric("Model ROC AUC", "0.94")
     
     st.markdown("---")
     
@@ -1396,9 +1396,34 @@ with tab5:
     | Step | Description |
     |------|-------------|
     | Data Integration | Combined ClinVar, gnomAD, and BRCA Exchange databases |
-    | Feature Engineering | Created 13 features including SA-specific flags |
+    | Feature Engineering | Created 14 features including SA-specific flags |
+    | Data Cleaning | Removed 285 mislabeled variants (see below) |
     | Model Training | XGBoost classifier with Bayesian hyperparameter optimization |
     | Validation | Literature mining and TCGA clinical data |
+    
+    ### Data Cleaning: Removing Mislabeled Variants
+    
+    During model development, we identified **285 truncating variants** in ClinVar that were 
+    labeled as Benign/Likely Benign but are almost certainly mislabeled. These were removed 
+    from training data.
+    
+    **Why this matters:**
+    - Truncating variants (nonsense/frameshift) cause **loss of function** in BRCA2
+    - Loss of BRCA2 function is well-established to increase cancer risk
+    - A rare truncating variant being "benign" contradicts basic biology
+    
+    **Criteria for removal:**
+    - Consequence: Truncating (stop-gain or frameshift)
+    - ClinVar label: Benign or Likely Benign
+    - Allele frequency: Rare (< 0.1% in gnomAD)
+    - Position: Not at very end of gene (< 95% of protein length)
+    
+    **What we kept:**
+    - Common truncating variants (AF > 0.1%) - may be tolerated in population
+    - End-of-gene truncating variants - truncation may not affect function
+    
+    After cleaning, truncating variants in training data are **96% pathogenic**, 
+    matching biological expectations.
     
     ### Key Findings
     
@@ -1407,32 +1432,35 @@ with tab5:
     - **0% overlap** with published literature (proving documentation gap)
     - **2,386 cancer patients** analyzed for clinical validation
     
-    ### The 13 Features Used
+    ### The 14 Features Used
+    
+    **Genomic (2 features):**
+    1. Chromosome (always 13 for BRCA2)
+    2. Genomic position (Start)
     
     **Population Genetics (5 features):**
-    1. Global allele frequency (gnomAD)
-    2. South Asian allele frequency
-    3. SA enrichment ratio
-    4. SA-specific flag
-    5. SA-enriched flag
+    3. Global allele frequency (gnomAD)
+    4. South Asian allele frequency
+    5. SA enrichment ratio
+    6. SA-specific flag
+    7. SA-enriched flag
     
     **Clinical Evidence (3 features):**
-    6. ClinVar review status (0-4 stars)
-    7. Number of submitters
-    8. Consequence severity
+    8. ClinVar review status (0-4 stars)
+    9. Number of submitters
+    10. Consequence severity (0=synonymous, 1=missense, 2=truncating)
     
-    **Structural Features (5 features):**
-    9. Position in gene (scaled 0-1)
-    10. BRC1 domain
-    11. BRC2 domain
-    12. BRC3-4 domain
-    13. Other domain
+    **Structural Features (4 features):**
+    11. Position in gene (scaled 0-1)
+    12. BRC1 domain
+    13. BRC2 domain
+    14. BRC3-4 / Other domain
     
     ### Model Performance
     
     | Metric | Value |
     |--------|-------|
-    | ROC AUC | ~0.80 |
+    | ROC AUC | ~0.94 |
     | Optimization | Bayesian (Optuna) |
     | Cross-validation | 5-fold |
     
