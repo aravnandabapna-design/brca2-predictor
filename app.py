@@ -177,12 +177,14 @@ def fetch_gnomad_data(variant_id):
         
         gnomad_variant_id = f"{chrom}-{pos}-{ref}-{alt}"
         
-        # List of datasets to try
+        # List of datasets to try (updated for 2025)
         datasets_to_try = [
-            "gnomad_r4",      # gnomAD v4 (GRCh38)
-            "gnomad_r3",      # gnomAD v3 (GRCh38)
+            "gnomad_r4",      # gnomAD v4.x (GRCh38)
+            "gnomad_r3",      # gnomAD v3 (GRCh38)  
             "gnomad_r2_1",    # gnomAD v2.1.1 (GRCh37)
         ]
+        
+        errors_by_dataset = {}
         
         for dataset_id in datasets_to_try:
             variables = {
@@ -200,15 +202,25 @@ def fetch_gnomad_data(variant_id):
                 
                 data = response.json()
                 
-                if "errors" not in data:
-                    variant = data.get("data", {}).get("variant")
-                    if variant:
-                        return variant, None
-            except:
-                continue
+                # Check for errors in response
+                if "errors" in data:
+                    errors_by_dataset[dataset_id] = data["errors"][0].get("message", "Unknown error")
+                    continue
+                    
+                variant = data.get("data", {}).get("variant")
+                if variant:
+                    return variant, None
+                else:
+                    errors_by_dataset[dataset_id] = "Variant not found"
+                    
+            except requests.exceptions.Timeout:
+                errors_by_dataset[dataset_id] = "Timeout"
+            except Exception as e:
+                errors_by_dataset[dataset_id] = str(e)
         
-        # If all datasets fail, return error
-        return None, "Variant not found in gnomAD (tried v4, v3, v2.1.1)"
+        # If all datasets fail, return detailed error
+        error_details = "; ".join([f"{k}: {v}" for k, v in errors_by_dataset.items()])
+        return None, f"Variant not found in gnomAD. Details: {error_details}"
         
     except requests.exceptions.Timeout:
         return None, "Request timed out. Please try again."
