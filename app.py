@@ -1,6 +1,7 @@
 """
-BRCA2 Variant Pathogenicity Predictor v2.4
+BRCA2 Variant Pathogenicity Predictor v3.0
 ==========================================
+- Now uses trained XGBoost model (Bayesian optimized)
 - Fixed gnomAD API query
 - All tabs restored
 - No text truncation
@@ -16,6 +17,8 @@ import plotly.graph_objects as go
 import requests
 import json
 import re
+import pickle
+import os
 
 # Page configuration
 st.set_page_config(
@@ -78,8 +81,37 @@ st.markdown("""
     * {
         text-overflow: unset !important;
     }
+    .model-badge {
+        background-color: #1E88E5;
+        color: white;
+        padding: 0.2rem 0.5rem;
+        border-radius: 4px;
+        font-size: 0.8rem;
+    }
 </style>
 """, unsafe_allow_html=True)
+
+# ============================================
+# LOAD TRAINED MODEL
+# ============================================
+
+@st.cache_resource
+def load_model():
+    """Load the trained XGBoost model"""
+    model_path = "xgboost_model.pkl"
+    if os.path.exists(model_path):
+        try:
+            with open(model_path, 'rb') as f:
+                model = pickle.load(f)
+            return model, True
+        except Exception as e:
+            st.warning(f"Error loading model: {e}")
+            return None, False
+    else:
+        return None, False
+
+# Load model at startup
+MODEL, MODEL_LOADED = load_model()
 
 # ============================================
 # API FUNCTIONS
@@ -460,8 +492,40 @@ def calculate_sa_flags(gnomad_af, gnomad_af_sas, other_pop_freqs):
 
 def predict_pathogenicity(features):
     """
-    Calculate pathogenicity score based on features
+    Predict pathogenicity using trained XGBoost model
+    Falls back to rule-based scoring if model unavailable
     """
+    if MODEL is not None:
+        # Feature order must match training data from notebook 07
+        feature_order = [
+            'gnomad_AF', 'gnomad_AF_sas', 'sa_enrichment_ratio',
+            'ReviewStatus_numeric', 'NumberSubmitters', 'is_SA_specific',
+            'is_SA_enriched', 'pos_scaled', 'consequence_severity',
+            'domain_BRC1', 'domain_BRC2', 'domain_BRC3_BRC4', 'domain_other'
+        ]
+        
+        # Build feature array
+        X = np.array([[features.get(f, 0) for f in feature_order]])
+        
+        try:
+            # Try to get probability (for classifier)
+            if hasattr(MODEL, 'predict_proba'):
+                proba = MODEL.predict_proba(X)[0]
+                # Return probability of pathogenic class (class 1)
+                if len(proba) > 1:
+                    return float(proba[1])
+                else:
+                    return float(proba[0])
+            else:
+                # For regressor, use predict directly
+                pred = MODEL.predict(X)[0]
+                return float(max(0, min(1, pred)))
+        except Exception as e:
+            st.warning(f"Model prediction failed: {e}. Using rule-based fallback.")
+    
+    # ========================================
+    # FALLBACK: Rule-based scoring
+    # ========================================
     base_score = 0.3
     
     if features['consequence_severity'] == 2:
@@ -516,13 +580,20 @@ def predict_pathogenicity(features):
 # Header
 st.markdown('<h1 class="main-header">🧬 BRCA2 Variant Pathogenicity Predictor</h1>', unsafe_allow_html=True)
 st.markdown('<p class="sub-header">Auto-Fetch from gnomAD & ClinVar | Addressing South Asian Database Bias</p>', unsafe_allow_html=True)
+
+# Model status indicator
+if MODEL_LOADED:
+    st.markdown('<p style="text-align: center;"><span class="model-badge">✓ XGBoost Model Loaded (Bayesian Optimized)</span></p>', unsafe_allow_html=True)
+else:
+    st.markdown('<p style="text-align: center;"><span style="background-color: #f39c12; color: white; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">⚠ Using Rule-Based Fallback</span></p>', unsafe_allow_html=True)
+
 st.markdown("---")
 
 # Sidebar
 with st.sidebar:
     st.markdown("## About This Tool")
-    st.markdown("""
-    **Version 2.4**
+    st.markdown(f"""
+    **Version 3.0** {'✓ ML Model' if MODEL_LOADED else '⚠ Fallback Mode'}
     
     Enter a gnomAD ID or ClinVar ID to automatically retrieve variant data.
     
@@ -540,6 +611,15 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### Settings")
     debug_mode = st.checkbox("Show raw API responses")
+    
+    if MODEL_LOADED:
+        st.markdown("---")
+        st.markdown("### Model Info")
+        st.markdown(f"**Type:** {type(MODEL).__name__}")
+        if hasattr(MODEL, 'n_estimators'):
+            st.markdown(f"**Estimators:** {MODEL.n_estimators}")
+        if hasattr(MODEL, 'max_depth'):
+            st.markdown(f"**Max Depth:** {MODEL.max_depth}")
 
 # ALL TABS
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -730,6 +810,12 @@ with tab1:
                 st.markdown("---")
                 st.markdown("## 🎯 Prediction")
                 
+                # Show which method is being used
+                if MODEL_LOADED:
+                    st.info("🤖 Using trained XGBoost model (Bayesian optimized)")
+                else:
+                    st.warning("📐 Using rule-based fallback (model not loaded)")
+                
                 prediction = predict_pathogenicity(all_features)
                 
                 c1, c2 = st.columns([1, 1])
@@ -827,6 +913,12 @@ with tab2:
             'domain_other': int(other_m)
         }
         
+        # Show which method is being used
+        if MODEL_LOADED:
+            st.info("🤖 Using trained XGBoost model (Bayesian optimized)")
+        else:
+            st.warning("📐 Using rule-based fallback (model not loaded)")
+        
         pred = predict_pathogenicity(manual_features)
         
         st.markdown("---")
@@ -849,7 +941,7 @@ with tab3:
     c1.metric("SA Underrepresentation", "47.5%")
     c2.metric("SA-Specific VUS", "84")
     c3.metric("Literature Overlap", "0%")
-    c4.metric("Model Accuracy", "~90%")
+    c4.metric("Model ROC AUC", "~0.80")
     
     st.markdown("---")
     
@@ -976,7 +1068,7 @@ with tab5:
     |------|-------------|
     | Data Integration | Combined ClinVar, gnomAD, and BRCA Exchange databases |
     | Feature Engineering | Created 13 features including SA-specific flags |
-    | Model Training | XGBoost regression with continuous labels (0-1 scale) |
+    | Model Training | XGBoost classifier with Bayesian hyperparameter optimization |
     | Validation | Literature mining and TCGA clinical data |
     
     ### Key Findings
@@ -1006,6 +1098,14 @@ with tab5:
     11. BRC2 domain
     12. BRC3-4 domain
     13. Other domain
+    
+    ### Model Performance
+    
+    | Metric | Value |
+    |--------|-------|
+    | ROC AUC | ~0.80 |
+    | Optimization | Bayesian (Optuna) |
+    | Cross-validation | 5-fold |
     
     ### Implications
     
@@ -1045,8 +1145,9 @@ with tab5:
 
 # Footer
 st.markdown("---")
+model_status = "XGBoost ML Model" if MODEL_LOADED else "Rule-Based Fallback"
 st.markdown(
-    "<p style='text-align: center; color: #666;'>BRCA2 Database Bias Project v2.4 | "
-    "Auto-fetch from gnomAD & ClinVar</p>", 
+    f"<p style='text-align: center; color: #666;'>BRCA2 Database Bias Project v3.0 | "
+    f"{model_status} | Auto-fetch from gnomAD & ClinVar</p>", 
     unsafe_allow_html=True
 )
