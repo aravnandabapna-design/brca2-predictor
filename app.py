@@ -1,10 +1,15 @@
 """
-BRCA2 Variant Pathogenicity Predictor v3.0
+BRCA2 Variant Pathogenicity Predictor v3.1
 ==========================================
-- Now uses trained XGBoost model (Bayesian optimized)
-- Fixed gnomAD API query
-- All tabs restored
-- No text truncation
+- Uses trained XGBoost model (Bayesian optimized)
+- Fixed consequence_severity detection (uses HGVS name patterns)
+- Calibrated thresholds based on model behavior:
+  - >=50%: Likely Pathogenic
+  - 30-50%: Uncertain  
+  - 15-30%: Likely Benign
+  - <15%: Benign
+- Warning for suspicious ClinVar submissions (truncating + benign + 0-star)
+- gnomAD API fallback with manual input option
 
 Created as part of: Database Bias in BRCA2 Variant Interpretation Project
 """
@@ -23,7 +28,7 @@ import os
 # Page configuration
 st.set_page_config(
     page_title="BRCA2 Variant Predictor",
-    page_icon="🧬",
+    page_icon="DNA",
     layout="wide"
 )
 
@@ -585,7 +590,7 @@ def calculate_sa_flags(gnomad_af, gnomad_af_sas, other_pop_freqs):
     }
 
 
-def predict_pathogenicity(features):
+def predict_pathogenicity(features, debug=False):
     """
     Predict pathogenicity using trained XGBoost model
     Falls back to rule-based scoring if model unavailable
@@ -601,12 +606,21 @@ def predict_pathogenicity(features):
         ]
         
         # Build feature array
-        X = np.array([[features.get(f, 0) for f in feature_order]])
+        feature_values = [features.get(f, 0) for f in feature_order]
+        X = np.array([feature_values])
+        
+        # Debug: show what's being sent to the model
+        if debug:
+            st.markdown("###  Debug: Features Sent to Model")
+            debug_df = {feature_order[i]: feature_values[i] for i in range(len(feature_order))}
+            st.json(debug_df)
         
         try:
             # Try to get probability (for classifier)
             if hasattr(MODEL, 'predict_proba'):
                 proba = MODEL.predict_proba(X)[0]
+                if debug:
+                    st.write(f"Model predict_proba output: {proba}")
                 # Return probability of pathogenic class (class 1)
                 if len(proba) > 1:
                     return float(proba[1])
@@ -615,6 +629,8 @@ def predict_pathogenicity(features):
             else:
                 # For regressor, use predict directly
                 pred = MODEL.predict(X)[0]
+                if debug:
+                    st.write(f"Model predict output: {pred}")
                 return float(max(0, min(1, pred)))
         except Exception as e:
             st.warning(f"Model prediction failed: {e}. Using rule-based fallback.")
@@ -674,12 +690,12 @@ def predict_pathogenicity(features):
 # ============================================
 
 # Header
-st.markdown('<h1 class="main-header">🧬 BRCA2 Variant Pathogenicity Predictor</h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-header"> BRCA2 Variant Pathogenicity Predictor</h1>', unsafe_allow_html=True)
 st.markdown('<p class="sub-header">Auto-Fetch from gnomAD & ClinVar | Addressing South Asian Database Bias</p>', unsafe_allow_html=True)
 
 # Model status indicator
 if MODEL_LOADED:
-    st.markdown('<p style="text-align: center;"><span class="model-badge">✓ XGBoost Model Loaded (Bayesian Optimized)</span></p>', unsafe_allow_html=True)
+    st.markdown('<p style="text-align: center;"><span class="model-badge">[OK] XGBoost Model Loaded (Bayesian Optimized)</span></p>', unsafe_allow_html=True)
 else:
     st.markdown('<p style="text-align: center;"><span style="background-color: #f39c12; color: white; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">⚠ Using Rule-Based Fallback</span></p>', unsafe_allow_html=True)
 
@@ -689,7 +705,7 @@ st.markdown("---")
 with st.sidebar:
     st.markdown("## About This Tool")
     st.markdown(f"""
-    **Version 3.0** {'✓ ML Model' if MODEL_LOADED else '⚠ Fallback Mode'}
+    **Version 3.0** {'[OK] ML Model' if MODEL_LOADED else '⚠ Fallback Mode'}
     
     Enter a gnomAD ID or ClinVar ID to automatically retrieve variant data.
     
@@ -719,10 +735,10 @@ with st.sidebar:
 
 # ALL TABS
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "🔬 Auto-Fetch", 
-    "📝 Manual Entry", 
-    "📊 Key Findings",
-    "📈 Data Explorer",
+    " Auto-Fetch", 
+    " Manual Entry", 
+    " Key Findings",
+    " Data Explorer",
     "ℹ️ About"
 ])
 
@@ -730,7 +746,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # TAB 1: Auto-Fetch
 # ============================================
 with tab1:
-    st.markdown("## 🚀 Enter Variant IDs")
+    st.markdown("##  Enter Variant IDs")
     
     col1, col2 = st.columns(2)
     
@@ -739,7 +755,7 @@ with tab1:
         gnomad_id = st.text_input(
             "Format: chrom-pos-ref-alt",
             placeholder="13-32325155-T-A",
-            help="⚠️ Note: gnomAD API may be blocked on cloud servers. ClinVar often includes gnomAD data."
+            help="[!] Note: gnomAD API may be blocked on cloud servers. ClinVar often includes gnomAD data."
         )
         
     with col2:
@@ -751,7 +767,7 @@ with tab1:
         )
     
     # Manual gnomAD input section (for when API is blocked)
-    with st.expander("📝 **Manual gnomAD Input** (use if API is blocked)", expanded=False):
+    with st.expander(" **Manual gnomAD Input** (use if API is blocked)", expanded=False):
         st.markdown("""
         If the gnomAD API is blocked, you can manually enter values from the gnomAD website.
         Go to [gnomAD](https://gnomad.broadinstitute.org/), search for your variant, and copy the values below.
@@ -789,11 +805,11 @@ with tab1:
                 help="The VEP Consequence shown on gnomAD variant page"
             )
         
-        use_manual_gnomad = st.checkbox("✅ Use these manual values instead of API", value=False)
+        use_manual_gnomad = st.checkbox("[OK] Use these manual values instead of API", value=False)
     
     st.markdown("---")
     
-    if st.button("🔍 Fetch Data & Predict", type="primary", use_container_width=True):
+    if st.button(" Fetch Data & Predict", type="primary", use_container_width=True):
         
         if not gnomad_id and not clinvar_id:
             st.error("Please enter at least one ID")
@@ -872,7 +888,7 @@ with tab1:
                         # Set consequence severity
                         if is_truncating:
                             all_features['consequence_severity'] = 2
-                            st.info(f"🔬 Detected truncating variant (nonsense/frameshift)")
+                            st.info(f" Detected truncating variant (nonsense/frameshift)")
                         elif clinvar_consequence:
                             if clinvar_consequence.lower() in ['missense', 'missense_variant']:
                                 all_features['consequence_severity'] = 1
@@ -891,7 +907,7 @@ with tab1:
                             # Determine domain
                             domain_features, domain_name = determine_domain(protein_position)
                             all_features.update(domain_features)
-                            st.info(f"📍 Protein position {protein_position} → {domain_name} domain, pos_scaled={all_features['pos_scaled']:.3f}")
+                            st.info(f"[Position] Protein position {protein_position} → {domain_name} domain, pos_scaled={all_features['pos_scaled']:.3f}")
                         
                         fetch_results['ClinVar'] = {
                             'Variant': parsed.get('variant_name', 'N/A'),
@@ -902,14 +918,14 @@ with tab1:
                             'Consequence': parsed.get('consequence_from_clinvar', 'N/A'),
                             'Protein Change': parsed.get('protein_change', 'N/A')
                         }
-                        st.success("✅ ClinVar data fetched!")
+                        st.success("[OK] ClinVar data fetched!")
             
             # Handle gnomAD data (manual or API)
             gnomad_success = False
             
             # Check if user wants to use manual gnomAD values
             if use_manual_gnomad:
-                st.info("📝 Using manual gnomAD values...")
+                st.info(" Using manual gnomAD values...")
                 
                 # Parse manual allele frequencies
                 try:
@@ -969,7 +985,7 @@ with tab1:
                     'Consequence': manual_consequence,
                     'Position': str(manual_position) if manual_position > 0 else "Not specified"
                 }
-                st.success("✅ Manual gnomAD values applied!")
+                st.success("[OK] Manual gnomAD values applied!")
                 gnomad_success = True
             
             # Try gnomAD API if not using manual values
@@ -987,13 +1003,13 @@ with tab1:
                     gnomad_data, gnomad_error = fetch_gnomad_data(gnomad_id)
                     
                     if gnomad_error:
-                        st.warning(f"⚠️ {gnomad_error}")
-                        st.info("💡 **Tip:** Expand 'Manual gnomAD Input' above, enter values from gnomAD website, check the box, and click Fetch again.")
+                        st.warning(f"[!] {gnomad_error}")
+                        st.info(" **Tip:** Expand 'Manual gnomAD Input' above, enter values from gnomAD website, check the box, and click Fetch again.")
                         
                         # Try to use ClinVar's gnomAD data as fallback
                         if clinvar_gnomad_af is not None:
                             all_features['gnomad_AF'] = clinvar_gnomad_af
-                            st.success(f"✅ Using gnomAD AF from ClinVar: {clinvar_gnomad_af:.2e}")
+                            st.success(f"[OK] Using gnomAD AF from ClinVar: {clinvar_gnomad_af:.2e}")
                             gnomad_success = True
                     elif gnomad_data:
                         if debug_mode:
@@ -1031,7 +1047,7 @@ with tab1:
                             'Consequence': parsed['consequence'],
                             'Domain': domain_name
                         }
-                        st.success("✅ gnomAD data fetched!")
+                        st.success("[OK] gnomAD data fetched!")
                         gnomad_success = True
             
             # Display results
@@ -1080,28 +1096,36 @@ with tab1:
                 
                 # Prediction
                 st.markdown("---")
-                st.markdown("## 🎯 Prediction")
+                st.markdown("##  Prediction")
                 
                 # Show which method is being used
                 if MODEL_LOADED:
-                    st.info("🤖 Using trained XGBoost model (Bayesian optimized)")
+                    st.info("[Model] Using trained XGBoost model (Bayesian optimized)")
                 else:
-                    st.warning("📐 Using rule-based fallback (model not loaded)")
+                    st.warning("[Fallback] Using rule-based fallback (model not loaded)")
                 
-                prediction = predict_pathogenicity(all_features)
+                prediction = predict_pathogenicity(all_features, debug=debug_mode)
                 
                 c1, c2 = st.columns([1, 1])
                 
+                # Thresholds based on model calibration:
+                # - Model gives ~68% median for ClinVar Pathogenic variants
+                # - Model gives ~18% median for ClinVar Likely Benign variants  
+                # - Model gives ~7.5% median for ClinVar Benign variants
+                
                 with c1:
-                    if prediction >= 0.7:
+                    if prediction >= 0.5:
                         st.markdown(f'<p class="prediction-high">Score: {prediction:.1%}</p>', unsafe_allow_html=True)
-                        st.error("⚠️ HIGH RISK - Likely Pathogenic")
-                    elif prediction >= 0.4:
+                        st.error("HIGH RISK - Likely Pathogenic")
+                    elif prediction >= 0.3:
                         st.markdown(f'<p class="prediction-uncertain">Score: {prediction:.1%}</p>', unsafe_allow_html=True)
-                        st.warning("⚡ UNCERTAIN")
+                        st.warning("UNCERTAIN - Needs Review")
+                    elif prediction >= 0.15:
+                        st.markdown(f'<p class="prediction-low">Score: {prediction:.1%}</p>', unsafe_allow_html=True)
+                        st.info("LOW RISK - Likely Benign")
                     else:
                         st.markdown(f'<p class="prediction-low">Score: {prediction:.1%}</p>', unsafe_allow_html=True)
-                        st.success("✅ LOW RISK - Likely Benign")
+                        st.success("VERY LOW RISK - Likely Benign")
                 
                 with c2:
                     fig = go.Figure(go.Indicator(
@@ -1112,9 +1136,10 @@ with tab1:
                             'axis': {'range': [0, 100]},
                             'bar': {'color': "darkblue"},
                             'steps': [
-                                {'range': [0, 40], 'color': "#27ae60"},
-                                {'range': [40, 70], 'color': "#f39c12"},
-                                {'range': [70, 100], 'color': "#e74c3c"}
+                                {'range': [0, 15], 'color': "#27ae60"},   # Benign
+                                {'range': [15, 30], 'color': "#82e0aa"}, # Likely Benign
+                                {'range': [30, 50], 'color': "#f39c12"}, # Uncertain
+                                {'range': [50, 100], 'color': "#e74c3c"} # Pathogenic
                             ]
                         }
                     ))
@@ -1123,18 +1148,44 @@ with tab1:
                 
                 if all_features['is_SA_specific'] or all_features['is_SA_enriched']:
                     st.warning("""
-                    **⚠️ South Asian Population Bias Alert**
+                    **[!] South Asian Population Bias Alert**
                     
                     This variant is enriched in South Asian populations. Due to 47.5% underrepresentation 
                     of South Asians in genomic databases, this variant may be under-studied and its 
                     classification could be affected by database bias.
+                    """)
+                
+                # Check for suspicious ClinVar submissions
+                # Truncating variants labeled as Benign with low evidence are likely errors
+                clinvar_class = fetch_results.get('ClinVar', {}).get('Classification', '')
+                is_truncating = all_features.get('consequence_severity', 0) == 2
+                is_benign_label = 'benign' in clinvar_class.lower() if clinvar_class else False
+                is_low_review = all_features.get('ReviewStatus_numeric', 0) == 0
+                is_rare = all_features.get('gnomad_AF', 0) < 0.001
+                is_not_at_end = all_features.get('pos_scaled', 0) < 0.95
+                
+                if is_truncating and is_benign_label and is_low_review and is_rare and is_not_at_end:
+                    st.warning("""
+                    **[!] Suspicious ClinVar Classification**
+                    
+                    This variant is **truncating** (creates a premature stop codon or frameshift), 
+                    yet ClinVar classifies it as Benign/Likely Benign with **no review criteria** (0 stars).
+                    
+                    **Why this is suspicious:**
+                    - Truncating variants in BRCA2 almost always cause loss of function
+                    - This variant is rare (not common in the population)
+                    - It's not at the very end of the gene (where truncation might be tolerated)
+                    - The ClinVar submission has no supporting evidence criteria
+                    
+                    **Our model prediction may be more reliable** than the ClinVar classification 
+                    for this variant. We recommend additional clinical review.
                     """)
 
 # ============================================
 # TAB 2: Manual Entry
 # ============================================
 with tab2:
-    st.markdown("## 📝 Manual Entry")
+    st.markdown("##  Manual Entry")
     st.markdown("Use this if APIs are unavailable or you already have the values.")
     
     col1, col2 = st.columns(2)
@@ -1187,27 +1238,30 @@ with tab2:
         
         # Show which method is being used
         if MODEL_LOADED:
-            st.info("🤖 Using trained XGBoost model (Bayesian optimized)")
+            st.info("[Model] Using trained XGBoost model (Bayesian optimized)")
         else:
-            st.warning("📐 Using rule-based fallback (model not loaded)")
+            st.warning("[Fallback] Using rule-based fallback (model not loaded)")
         
         pred = predict_pathogenicity(manual_features)
         
         st.markdown("---")
-        st.markdown(f"## 🎯 Pathogenicity Score: **{pred:.1%}**")
+        st.markdown(f"## Pathogenicity Score: **{pred:.1%}**")
         
-        if pred >= 0.7:
-            st.error("⚠️ HIGH RISK - Likely Pathogenic")
-        elif pred >= 0.4:
-            st.warning("⚡ UNCERTAIN - Needs Further Review")
+        # Same thresholds as main tab
+        if pred >= 0.5:
+            st.error("[!] HIGH RISK - Likely Pathogenic")
+        elif pred >= 0.3:
+            st.warning("UNCERTAIN - Needs Further Review")
+        elif pred >= 0.15:
+            st.info("LOW RISK - Likely Benign")
         else:
-            st.success("✅ LOW RISK - Likely Benign")
+            st.success("[OK] VERY LOW RISK - Likely Benign")
 
 # ============================================
 # TAB 3: Key Findings
 # ============================================
 with tab3:
-    st.markdown("## 📊 Key Research Findings")
+    st.markdown("##  Key Research Findings")
     
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("SA Underrepresentation", "47.5%")
@@ -1256,7 +1310,7 @@ with tab3:
 # TAB 4: Data Explorer
 # ============================================
 with tab4:
-    st.markdown("## 📈 Explore the Data")
+    st.markdown("##  Explore the Data")
     
     st.markdown("""
     View SA-specific VUS candidates identified in this research project.
