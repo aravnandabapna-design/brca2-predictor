@@ -695,7 +695,7 @@ st.markdown('<p class="sub-header">Auto-Fetch from gnomAD & ClinVar | Addressing
 
 # Model status indicator
 if MODEL_LOADED:
-    st.markdown('<p style="text-align: center;"><span class="model-badge">[OK] XGBoost Model Loaded (Bayesian Optimized)</span></p>', unsafe_allow_html=True)
+    st.markdown('<p style="text-align: center;"><span class="model-badge">[OK] XGBoost Model Loaded</span></p>', unsafe_allow_html=True)
 else:
     st.markdown('<p style="text-align: center;"><span style="background-color: #f39c12; color: white; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">⚠ Using Rule-Based Fallback</span></p>', unsafe_allow_html=True)
 
