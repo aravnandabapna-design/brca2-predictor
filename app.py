@@ -1,7 +1,7 @@
 """
 BRCA2 Variant Pathogenicity Predictor v3.1
 ==========================================
-- Uses trained XGBoost model (Bayesian optimized)
+- Uses trained XGBoost model
 - Fixed consequence_severity detection (uses HGVS name patterns)
 - Calibrated thresholds based on model behavior:
   - >=50%: Likely Pathogenic
